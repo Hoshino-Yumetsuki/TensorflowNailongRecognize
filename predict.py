@@ -16,7 +16,8 @@ logging.basicConfig(
 
 def preprocess_image(image_path, target_size=(224, 224)):
     try:
-        img = cv2.imread(image_path)
+        # 修改图片读取方式，处理中文路径
+        img = cv2.imdecode(np.fromfile(image_path, dtype=np.uint8), cv2.IMREAD_COLOR)
         if img is None:
             raise ValueError("无法读取图像")
 
@@ -64,8 +65,8 @@ def predict_folder(model_path, image_folder):
 
     # 预测每张图片
     for image_file in image_files:
-        # 使用 os.path.abspath 获取绝对路径，并确保路径编码正确
-        image_path = os.path.abspath(os.path.join(image_folder, image_file))
+        # 使用 os.path.join 而不是直接拼接路径
+        image_path = os.path.join(image_folder, image_file)
         try:
             img = preprocess_image(image_path)
             # 确保输入数据类型为float32
