@@ -46,29 +46,31 @@ def preprocess_image(image_data, target_size=(224, 224)):
         # 将图像数据转换为numpy数组
         nparr = np.frombuffer(image_data, np.uint8)
 
-        # 创建内存缓冲区用于读取GIF
-        buf = cv2.imdecode(nparr, cv2.IMREAD_UNCHANGED)
-        if buf is None:
-            raise ValueError("无法解码图像")
+        # 尝试直接解码图像
+        img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+        if img is not None:
+            # 如果是静态图片（PNG, JPEG, BMP等）
+            return np.expand_dims(_process_single_frame(img), axis=0)
 
-        # 如果是静态图片，直接处理
-        if len(buf.shape) == 3:
-            return np.expand_dims(_process_single_frame(buf), axis=0)
-
-        # 如果是GIF，处理所有帧
+        # 如果直接解码失败，尝试作为GIF处理
         frames = []
-        cap = cv2.VideoCapture(bytes_to_video_path(image_data))
-        while True:
-            ret, frame = cap.read()
-            if not ret:
-                break
-            frames.append(_process_single_frame(frame))
-        cap.release()
+        try:
+            temp_path = bytes_to_video_path(image_data)
+            cap = cv2.VideoCapture(temp_path)
+            while True:
+                ret, frame = cap.read()
+                if not ret:
+                    break
+                frames.append(_process_single_frame(frame))
+            cap.release()
 
-        if not frames:
-            raise ValueError("无法提取图像帧")
+            if frames:
+                return np.array(frames)
+        except Exception as gif_error:
+            logging.warning(f"GIF处理失败: {str(gif_error)}")
 
-        return np.array(frames)
+        # 如果所有处理方法都失败
+        raise ValueError("不支持的图像格式或图像损坏")
 
     except Exception as e:
         logging.error(f"图像预处理失败: {str(e)}")
@@ -76,13 +78,26 @@ def preprocess_image(image_data, target_size=(224, 224)):
 
 def _process_single_frame(img, target_size=(224, 224)):
     """处理单帧图像"""
-    img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-    img = cv2.resize(img, target_size)
+    try:
+        # 确保图像是3通道RGB
+        if len(img.shape) == 2:  # 灰度图
+            img = cv2.cvtColor(img, cv2.COLOR_GRAY2RGB)
+        elif img.shape[2] == 4:  # RGBA图
+            img = cv2.cvtColor(img, cv2.COLOR_BGRA2RGB)
+        else:
+            img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
 
-    img = img.astype(np.float32) / 255.0
-    mean = np.array([0.485, 0.456, 0.406], dtype=np.float32)
-    std = np.array([0.229, 0.224, 0.225], dtype=np.float32)
-    return (img - mean) / std
+        # 调整图像大小
+        img = cv2.resize(img, target_size, interpolation=cv2.INTER_LINEAR)
+
+        # 标准化
+        img = img.astype(np.float32) / 255.0
+        mean = np.array([0.485, 0.456, 0.406], dtype=np.float32)
+        std = np.array([0.229, 0.224, 0.225], dtype=np.float32)
+        return (img - mean) / std
+    except Exception as e:
+        logging.error(f"帧处理失败: {str(e)}")
+        raise
 
 def bytes_to_video_path(image_data):
     """将图像字节数据保存为临时文件"""
@@ -93,12 +108,16 @@ def bytes_to_video_path(image_data):
 
 @app.post("/predict")
 async def predict_image(file: UploadFile):
-    """
-    接收图片并返回预测结果
-    返回格式: {"result": bool, "probability": float, "frame_count": int}
-    """
-    if not (file.content_type.startswith('image/')):
-        raise HTTPException(status_code=400, detail="只接受图片文件")
+    """接收图片并返回预测结果"""
+    # 扩展支持的图片类型
+    allowed_types = {'image/jpeg', 'image/png', 'image/gif',
+                    'image/bmp', 'image/webp', 'image/tiff'}
+
+    if not (file.content_type in allowed_types):
+        raise HTTPException(
+            status_code=400,
+            detail=f"不支持的文件类型。支持的类型: {', '.join(allowed_types)}"
+        )
 
     try:
         image_data = await file.read()
