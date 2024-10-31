@@ -50,7 +50,7 @@ def preprocess_image(image_data, target_size=(224, 224)):
         img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
         if img is not None:
             # 如果是静态图片（PNG, JPEG, BMP等）
-            return np.expand_dims(_process_single_frame(img), axis=0)
+            return {"type": "static", "data": np.expand_dims(_process_single_frame(img, target_size=target_size), axis=0)}
 
         # 如果直接解码失败，尝试作为GIF处理
         frames = []
@@ -61,15 +61,14 @@ def preprocess_image(image_data, target_size=(224, 224)):
                 ret, frame = cap.read()
                 if not ret:
                     break
-                frames.append(_process_single_frame(frame))
+                frames.append(_process_single_frame(frame, target_size=target_size))
             cap.release()
 
             if frames:
-                return np.array(frames)
+                return {"type": "gif", "data": np.array(frames)}
         except Exception as gif_error:
             logging.warning(f"GIF处理失败: {str(gif_error)}")
 
-        # 如果所有处理方法都失败
         raise ValueError("不支持的图像格式或图像损坏")
 
     except Exception as e:
@@ -109,43 +108,64 @@ def bytes_to_video_path(image_data):
 @app.post("/predict")
 async def predict_image(file: UploadFile):
     """接收图片并返回预测结果"""
-    # 扩展支持的图片类型
+    # 记录请求信息
+    logging.info(f"收到预测请求 - 文件名: {file.filename}, 文件类型: {file.content_type}, 文件大小: {file.size} bytes")
+
     allowed_types = {'image/jpeg', 'image/png', 'image/gif',
                     'image/bmp', 'image/webp', 'image/tiff'}
 
     if not (file.content_type in allowed_types):
+        error_msg = f"不支持的文件类型。支持的类型: {', '.join(allowed_types)}"
+        logging.warning(f"请求被拒绝 - {error_msg}")
         raise HTTPException(
             status_code=400,
-            detail=f"不支持的文件类型。支持的类型: {', '.join(allowed_types)}"
+            detail=error_msg
         )
 
     try:
         image_data = await file.read()
-        processed_images = preprocess_image(image_data)
+        processed_result = preprocess_image(image_data)
 
-        # 对每一帧进行预测
-        max_probability = 0.0
-        frame_count = processed_images.shape[0]
+        # 记录处理类型
+        logging.info(f"图像处理类型: {processed_result['type']}")
 
-        for frame in processed_images:
-            frame_expanded = np.expand_dims(frame, axis=0)
-            predictions = global_session.run(None, {global_input_name: frame_expanded})[0]
+        if processed_result["type"] == "static":
+            # 处理静态图片
+            predictions = global_session.run(None, {global_input_name: processed_result["data"]})[0]
             probability = float(predictions[0][0])
-            max_probability = max(max_probability, probability)
+            result = {
+                "type": "static",
+                "result": probability > 0.5,
+                "probability": probability
+            }
+            logging.info(f"预测完成 - 结果: {result}")
+            return result
+        else:
+            # 处理GIF
+            max_probability = 0.0
+            frame_count = processed_result["data"].shape[0]
 
-            # 如果任何一帧检测到目标，立即返回
-            if probability > 0.5:
-                return {
-                    "result": True,
-                    "probability": probability,
-                    "frame_count": frame_count
-                }
+            for frame in processed_result["data"]:
+                frame_expanded = np.expand_dims(frame, axis=0)
+                predictions = global_session.run(None, {global_input_name: frame_expanded})[0]
+                probability = float(predictions[0][0])
+                max_probability = max(max_probability, probability)
 
-        return {
-            "result": False,
-            "probability": max_probability,
-            "frame_count": frame_count
-        }
+                # 如果任何一帧检测到目标，立即返回
+                if probability > 0.5:
+                    return {
+                        "type": "gif",
+                        "result": True,
+                        "probability": probability,
+                        "frame_count": frame_count
+                    }
+
+            return {
+                "type": "gif",
+                "result": False,
+                "probability": max_probability,
+                "frame_count": frame_count
+            }
 
     except Exception as e:
         logging.error(f"预测失败: {str(e)}")
