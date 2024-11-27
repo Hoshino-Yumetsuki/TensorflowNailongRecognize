@@ -14,15 +14,11 @@ from numpy import expand_dims
 
 positive_dir = "positive"
 negative_dir = "negative"
-# 图片预处理函数
+
 def preprocess_image(image_path, target_size=(224, 224)):
-    # 读取图片并转换为RGB
     img = cv2.imread(image_path)
     img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-    # 调整图片大小
     img = cv2.resize(img, target_size)
-    # 归一化
-    img = preprocess_input(img)
     return img
 
 # 创建模型
@@ -55,7 +51,6 @@ def create_model(input_shape=(224, 224, 3)):
 # 创建数据生成器
 def create_data_generator(directory, target_size=(224, 224), batch_size=32):
     return ImageDataGenerator(
-        rescale=1./255,
         preprocessing_function=preprocess_input,
     ).flow_from_directory(
         directory,
@@ -70,7 +65,6 @@ def load_and_preprocess_image(image_path, target_size=(224, 224)):
     img = load_img(image_path, target_size=target_size)
     img_array = img_to_array(img)
     img_array = np.expand_dims(img_array, axis=0)
-    img_array = preprocess_input(img_array)
     return img_array
 
 def verify_image_sizes(directory, target_size=(224, 224)):
@@ -89,31 +83,11 @@ def verify_image_sizes(directory, target_size=(224, 224)):
 
     return irregular_images
 
-# 添加新的checkpoint管理函数
-def manage_checkpoints(checkpoint_dir, max_to_keep=5):
-    """管理checkpoint文件，只保留指定数量的最新文件"""
-    checkpoints = []
-    for file in os.listdir(checkpoint_dir):
-        if file.endswith('.keras'):
-            filepath = os.path.join(checkpoint_dir, file)
-            created_time = os.path.getctime(filepath)
-            checkpoints.append((filepath, created_time))
-
-    # 按创建时间排序
-    checkpoints.sort(key=lambda x: x[1], reverse=True)
-
-    # 删除多余的checkpoint文件
-    for filepath, _ in checkpoints[max_to_keep:]:
-        os.remove(filepath)
-
-# 修改训练函数
 def train_model(train_dir, batch_size=32, epochs=50, target_size=(224, 224),
                 checkpoint_dir='checkpoints', max_checkpoints=5,
                 resume_from=None, initial_epoch=0):
-    # 添加日志目录定义
     log_dir = "logs/" + datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
 
-    # 首先验证图片尺寸
     print("正在验证训练数据集中的图片尺寸...")
     irregular_images = verify_image_sizes(train_dir, target_size)
 
@@ -141,11 +115,10 @@ def train_model(train_dir, batch_size=32, epochs=50, target_size=(224, 224),
     def load_data_safely(generator):
         images_list = []
         labels_list = []
-        
-        # 使用generator的索引方法替代len()
+
         n_samples = generator.samples
         steps = n_samples // generator.batch_size + (1 if n_samples % generator.batch_size else 0)
-        
+
         for _ in range(steps):
             try:
                 images, labels = next(generator)
@@ -153,13 +126,13 @@ def train_model(train_dir, batch_size=32, epochs=50, target_size=(224, 224),
                 labels_list.append(labels)
             except StopIteration:
                 break
-        
+
         if images_list and labels_list:
             return np.concatenate(images_list), np.concatenate(labels_list)
         return np.array([]), np.array([])
 
     print("正在将数据加载到内存中...")
-    
+
     # 加载训练数据
     train_images, train_labels = load_data_safely(train_generator)
     val_images, val_labels = load_data_safely(validation_generator)
@@ -169,7 +142,7 @@ def train_model(train_dir, batch_size=32, epochs=50, target_size=(224, 224),
 
     # 确保批次大小不大于数据集大小
     batch_size = min(batch_size, len(train_images))
-    
+
     print(f"数据加载完成。训练集大小: {len(train_images)} 验证集大小: {len(val_images)}")
 
     # 在数据加载后添加验证步骤
@@ -178,13 +151,12 @@ def train_model(train_dir, batch_size=32, epochs=50, target_size=(224, 224),
     unique, counts = np.unique(train_labels, return_counts=True)
     for label, count in zip(unique, counts):
         print(f"类别 {label}: {count} 样本")
-    
+
     print(f"\n验证集类别分布:")
     unique, counts = np.unique(val_labels, return_counts=True)
     for label, count in zip(unique, counts):
         print(f"类别 {label}: {count} 样本")
-    
-    # 检查数据范围
+
     print(f"\n数据范围检查:")
     print(f"训练集数据范围: [{np.min(train_images):.2f}, {np.max(train_images):.2f}]")
     print(f"验证集数据范围: [{np.min(val_images):.2f}, {np.max(val_images):.2f}]")
@@ -196,14 +168,13 @@ def train_model(train_dir, batch_size=32, epochs=50, target_size=(224, 224),
     else:
         print("创建新模型...")
         model = create_model()
-        # 修改这里的编译代码
+
         model.compile(
-            optimizer='adam',  # 直接使用字符串 'adam' 而不是 Adam 对象
+            optimizer='adam',
             loss='binary_crossentropy',
             metrics=['accuracy']
         )
 
-    # 修改checkpoint回调函数
     checkpoint_path = os.path.join(
         checkpoint_dir,
         'model_epoch_{epoch:03d}_val_acc_{val_accuracy:.4f}.keras'
@@ -231,7 +202,6 @@ def train_model(train_dir, batch_size=32, epochs=50, target_size=(224, 224),
         )
     ]
 
-    # 修改模型训练部分
     history = model.fit(
         train_images,
         train_labels,
@@ -242,9 +212,6 @@ def train_model(train_dir, batch_size=32, epochs=50, target_size=(224, 224),
         callbacks=callbacks,
         shuffle=True  # 添加随机打乱
     )
-
-    # 管理checkpoint文件
-    manage_checkpoints(checkpoint_dir, max_checkpoints)
 
     return model, history
 
@@ -275,7 +242,6 @@ def find_latest_checkpoint(checkpoint_dir):
     return checkpoints[0][0]
 
 if __name__ == "__main__":
-    # 设置TensorFlow以使用所有CPU核
     tf.config.threading.set_intra_op_parallelism_threads(multiprocessing.cpu_count())
     tf.config.threading.set_inter_op_parallelism_threads(multiprocessing.cpu_count())
 
@@ -312,7 +278,7 @@ if __name__ == "__main__":
         print(f"在 {dir_name} 目录中找到 {len(image_files)} 个图片文件")
 
     if total_images < 100:  # 设置最小数据集大小
-        print("警告：数据集样本数量可能过少，建议每个类别至少50张图片")
+        print("警告：数据集样本数量过少")
 
     # 开始训练
     print("开始训练模型...")
